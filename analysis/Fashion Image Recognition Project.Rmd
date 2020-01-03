@@ -1,0 +1,919 @@
+---
+title: "Fashion Image Recognition"
+author: "Zoe Huang"
+date: ""
+output:
+  prettydoc::html_pretty:
+  theme: cayman
+highlight: github
+---
+
+```{r setup, include=FALSE}
+set.seed(72)
+knitr::opts_chunk$set(echo = TRUE, comment="", warning = FALSE, message = FALSE, tidy.opts=list(width.cutoff=55))
+```
+
+```{r libraries, echo = FALSE}
+library(data.table)
+library(DT)
+library(class)
+library(glmnet)
+library(caret)
+library(e1071)
+library(psych)
+library(rpart)
+library(randomForest)
+library(nnet)
+library(R.filesets)
+library(plyr)
+```
+
+```{r source_files}
+
+```
+
+## Set Up
+
+The sample size and number of features in the data can create computational challenges. The 9 selected training sets include the combinations of 3 selected sample sizes and 3 iterations of randomized sampling. Using a naming structure like dat_n_k to represet the training set at sample size n with the kth sample will help you stay organized and present your work. Another option would be to create one aggregated data set by binding the rows of the 9 separate training sets. With this option, it would help to include columns n and k that would identify the sample size and iteration. As an example, if sample sizes of 500, 1000, and 2000 were selected, then the aggregated data set would have 3 * (500 + 1000 + 2000) = 10500 rows. Then, for each combination of n and k, a model can be fit on the subset of this aggregated data set corresponding to a unique pair of n and k.
+
+One tricky aspect of generating predictions is understanding the workings of R’s predict function. Each modeling technique has its own associated prediction method. For instance, a Random Forest model from the randomForest package has a prediction method called predict.randomForest. It is worthwhile to study the help files for these methods, as sometimes the parameters to supply have some variations in their names or forms. Then, it is also worthwhile to examine the output of the predictions to ensure that they match your expectations. Usually supplying the parameter type = “response” in the prediction will lead to the correct output. Other types could lead to output that is not of the correct form to evaluate the method’s predictions.
+
+Therefore a few functions were developed to simplify the work which include the following steps:
+
+For each of the 10 models, write a customized function that will fit that model on a specific data set (e.g. dat_n_k as described above), generate predictions on the testing set, and report a summary of information to be included on the scoreboard.
+
+Then, for any single one of the 10 models, it would help to write a function that fits that model to each of the 9 training sets. This could be as simple as using a for loop to iterate through the 9 training sets and calling the customized function for that model described in the previous point.
+
+For each model, each of the 9 training sets will lead to its own summary of information for the scoreboard. The results of these trials can then be aggregated into a table.
+
+This table of 9 scoring results will then be further summarized into 3 rows of information, one for each selected sample size, to describe the overall performance of the model.
+
+With all of this in mind, it should be possible to have all of the work proceed in a relatively small number of processing functions:
+
+**Sampling:** This could be performed in 1 function.
+
+**Modeling Functions:** This could up to 1 per model for a total of 10. (It could be fewer if the same procedure is fit with different parameters.)
+
+**Iteration Function:** This would be 1 function that runs through the 9 iterations of a single model.
+
+**Scoring Function:** This could be 1 function to compute the scoreboard results for a model at a given sample size.
+
+**Scoring Summary Function:** This could be 1 function that aggregates the 90 modeling results into 30 rows of information, one for each unique pair of a model and a sample size.
+
+**Reporting Function:** This would appropriately format and display the scoreboard.
+
+See the following code for details of each function:
+
+```{r functions}
+# define sampling function 
+sampling = function(x,value){
+  x[sample(x = 1:x[,.N], size = value, replace = FALSE),]
+}
+
+
+# create formula
+create.formula <- function(outcome.name, input.names, input.patterns = NA,
+                         all.data.names = NA, return.as = "character") {    
+  variable.names.from.patterns <- c()
+  if (!is.na(input.patterns[1]) & !is.na(all.data.names[1])) {        
+    pattern <- paste(input.patterns, collapse = "|")        
+    variable.names.from.patterns <- all.data.names[grep(pattern = pattern,
+                                                        x = all.data.names)]    
+  }    
+  all.input.names <- unique(c(input.names, variable.names.from.patterns))    
+  all.input.names <- all.input.names[all.input.names != outcome.name]
+  if (!is.na(all.data.names[1])) {        
+    all.input.names <- all.input.names[all.input.names %in% all.data.names]    
+  }    
+  input.names.delineated <- sprintf("`%s`", all.input.names)    
+  the.formula <- sprintf("`%s` ~ %s", outcome.name, paste(input.names.delineated,
+                                                          collapse =" + "))
+  if (return.as == "formula") {
+    return(as.formula(the.formula))    
+  }
+  if (return.as != "formula") {
+    return(the.formula)    
+  }
+}
+
+# creat x and y
+create.x.and.y <-function(the.formula, data) {
+  require(data.table)
+  setDT(data)    
+  x <- model.matrix(object = as.formula(the.formula), data = data)    
+  y.name <- trimws(x = gsub(pattern = "`", replacement = "", 
+                            x = strsplit(x = the.formula, split = "~")[[1]][1],fixed =TRUE))    
+  y <- data[as.numeric(rownames(x)), get(y.name)]
+  return(list(x = x, y = y))}
+
+# define round function 
+round.numerics <- function(x, digits){
+  if(is.numeric(x)){
+    x <- round(x = x, digits = digits)
+  }
+  return(x)
+}
+
+# define iteration function
+iteration <- function(model.function){
+  tab <- NULL
+  for (i in 1:3){
+    for (j in 1:iterations){
+      size <- n.values[i]
+      data.name <- paste0("dat_",size,"_",j)
+      results <- model.function(data.name = data.name, size = size)
+      tab <- as.data.table(rbind(tab,results))
+    }
+  }
+  return(tab)
+}
+
+# define scoring function
+scoring <- function(model.function){
+  output <- get(sprintf("%s.%s",model.function,"tab"))
+  
+  A = output[,Sample.Size]/training[,.N]
+  B = output[,the.time]
+  C = output[,inaccuracy]
+  
+  Points <- 0.25*A + 0.25 * B + 0.5 * C
+  
+  result <- data.table(Model = output[,Model],
+                       `Sample Size` = output[,Sample.Size],
+                       Data = output[,data.name],
+                       A = A,
+                       B = B,
+                       C = C,
+                       Points = Points)
+  
+  return(result)
+}
+
+# define scoring summary function
+scoring.summary <- function(scoring.result){
+  scoring.summary = scoring.result[,.(A=mean(A),B=mean(B),C=mean(C),Points=mean(Points)),keyby = c("Model","Sample Size")]
+  return(scoring.summary)
+}
+
+# define reporting function
+reporting <- function(datatable.name){
+  datatable <- datatable.name[,lapply(X=.SD, FUN = "round.numerics",digits = digits)]
+  return(datatable(datatable))
+}
+
+# define plurality voting function
+vote <- function(input){
+  if (length(unique(table(input)))!=1){
+  most <- names(which.max(table(input))) 
+  } else {
+    most <- input[1]
+  }
+  return(most)
+}
+```
+
+```{r constants}
+n.values <- c(500,1000,2000)
+iterations <- 3
+digits <- 4
+train.file = "../data/MNIST-fashion training set-49.csv"
+testing.file = "../data/MNIST-fashion testing set-49.csv"
+fashion.name <- "label"
+```
+
+```{r load_data}
+training <- fread(input = train.file, verbose = FALSE)
+testing <- fread(input = testing.file, verbose = FALSE)
+```
+
+```{r clean_data}
+#check if any bad apple in independent variables
+independent_list <- names(training[,-1])
+tr_check = training[,lapply(.SD, FUN = is.numeric), .SDcol = independent_list]
+sum(tr_check == FALSE)
+te_check = testing[,lapply(.SD, FUN = is.numeric), .SDcol = independent_list]
+sum(te_check == FALSE)
+
+#check missing value
+sum(is.na(training))
+sum(is.na(testing))
+
+#check if there is any pixels out of [0,255]
+sum(training[,-1]<0|training[,-1]>255)
+sum(testing[,-1]<0|testing[,-1]>255)
+
+#check whether there is any new name in the label name in test dataset compared to train dataset
+train_uniq <- unique(training[,1])
+test_uniq <- unique(testing[,1])
+sum(train_uniq != test_uniq)
+```
+
+Seen from the result, both training and testing datasets are clean:
+
+1. All the independent variables are numeric
+2. No missing value
+3. All the pixels are in the range of [0,255]
+4. All the labels in testing dataset are from training dataset. There is no any new label name.
+
+```{r generate_samples}
+sample_datasets = c()
+for (i in n.values){
+  for (j in 1:iterations){
+    sample = sampling(training,i)
+    name = paste0("dat_",i,"_",j)
+    assign(name,sample)
+    sample_datasets = append(sample_datasets,name)
+    }
+  }
+sample_datasets
+data.table("Sample Size" = n.values,
+           "First Random Sample" = sample_datasets[c(1,4,7)],
+           "Second Random Sample" = sample_datasets[c(2,5,8)],
+           "Third Random Sample" = sample_datasets[c(3,6,9)])
+```
+
+Since there are 600000 observations in total in training dataset, we decided to use 500, 1000, and 2000 out of the overall training dataset as sample datasets by using sampling function that set before to sample from the rows of the overall training data randomly without replacement.
+
+## Introduction
+
+This project will implement 10 machine learning models to solve image recognition problem. We will also evaluate the models' performance in terms of model type, sample size and running time, and further discuss their pros and cons.  
+
+The dataset we used is a set of images for different types of apparel from Zalando's article, consisting of a training set of 60,000 examples and a test set of 10,000 examples. The original dataset divided each image into 784 (28 by 28) pixels. And in our project, we have condensed these data into 49 pixels (7 by 7) per image to simplify the computations. For each dataset, we have a column called *label* which indicates the type of the product and 49 columns for *pixels*, Denoted as *pixels1*, *pixels2*, ... ,*pixels49*, these *pixels* columns provide the measurement for the images in grayscale.  
+
+To solve the challenge, we first generate 9 different samples with 3 different sizes and 3 iterations respectively. For each sample, we applied the following 10 models to generate the predictive classification results.  
+
+1. Ridge Regression 
+2. K-Nearest Neighbors 
+3. Classification Tree
+4. Support Vector Machines
+5. Lasso Regression 
+6. Multinomial logistic regression
+7. Random Forest
+8. Generalized Boosted Regression Models - gbm  
+9. Generalized Boosted Regression Models - xgboost  
+10. Ensemble model  
+
+In order to evaluate their quality, we introduced a score function by balancing the sample size, running time and prediction accuracy. Based on these results, we made some comparisons between these models, identifying the "best" model for our dataset.
+
+### Model 1: Ridge Regression
+
+Ridge Regression is used to analyze multiple regression data with multicollinearity. It is simple and can prevent overfitting by adding a L2 penalty term in the cost function. However, due to its trading variance for bias, the output from ridge regression is not unbiased. From the scoreboard, we can tell that as sample size increases, model scores increase as well which is not desired, since our goal is to minimize the value of *Points*. Let's take a further look at the *A*, *B*, *C* score respectively. *A* score is not very informative because it's a kind of "fixed" value for each sample. It is interesting to see that the values of proportion of the predictions on the testing set that are incorrectly classified don't vary much among these 9 datasets. But running time increases dramatically as the sample size grows which is responsible for the high variability of *Points*. This may imply that ridge regression may be highly time-consuming in large sample.
+
+```{r code_model1_development, eval = FALSE}
+input.names <- names(training[, -1])
+formula.fashion <- create.formula(outcome.name = fashion.name, input.names = input.names)
+
+# create an empty dataframe to contain predictions
+pred.frm.ridge.regression <- NULL
+
+# create a function for ridge regression model
+model.ridge.regression <- function(data.name,size) {
+  toc <- Sys.time()
+  train.data <- get(data.name)
+  x.y.train <- create.x.and.y(the.formula = formula.fashion,
+                              data = train.data) 
+  # fit ridge regression model
+  mod <- cv.glmnet(x = x.y.train$x, y = x.y.train$y, family = "multinomial", 
+                   alpha = 0)   
+  x.y.test <- create.x.and.y(the.formula = formula.fashion,
+                             data = testing)   
+  # prediction
+  pred <- predict(object = mod, newx = x.y.test$x, type ="class", s = mod$lambda.min)    
+  tic <- Sys.time()
+  the.time <- as.numeric(x = tic-toc, units = "secs")
+  the.time <- min(the.time/60 , 1)
+  inaccuracy <- mean(pred != testing$label)
+
+  output <- data.frame(Model = "Ridge Regression",
+                       Sample.Size = size,
+                       data.name = data.name,
+                       the.time = the.time,
+                       inaccuracy = inaccuracy)
+  pred.frm.ridge.regression <<- cbind(as.character(pred),pred.frm.ridge.regression)
+  
+  return(output)
+}
+
+
+# Running the function for 3 different sample sizes and 3 iterations for each size
+ridge.regression.tab = iteration(model.function = model.ridge.regression)
+colnames(pred.frm.ridge.regression) <- sample_datasets
+
+# Formatting the tables with initial results
+ridge.regression <- scoring('ridge.regression')
+ridge.regression.table <- reporting(ridge.regression)
+
+# Formatting the tables with average results
+ridge.regression.summary <- scoring.summary(ridge.regression)
+ridge.regression.summary.table <- reporting(ridge.regression.summary)
+
+# save the results of the model
+saveRDS(ridge.regression,"ridge.regression")
+saveRDS(ridge.regression.summary,"ridge.regression.summary")
+saveRDS(ridge.regression.table,"ridge.regression.table")
+saveRDS(ridge.regression.summary.table,"ridge.regression.summary.table")
+```
+
+```{r load_model1}
+# load the results of the model
+loadRDS("ridge.regression.table")
+loadRDS("ridge.regression.summary.table")
+```
+
+### Model 2: K-Nearest Neighbors   
+
+K-Nearest Neighbors (KNN) is a non-parametric method. It is an algorithm that is useful for making classifications/predictions when there are potential non-linear boundaries separating classes or values. It is commonly used for its easy of interpretation and implementation. In our classification setting, KNN calculates the distance between a test object and all training objects. The test point will be assigned to the class that is most common among its **k** nearest neighbors. We do a trick here. Since we already know there are 10 different types of product, so it is reasonable to pick **k** = 10 in the KNN model. Notice that KNN performs better in large sample and the accuracy gets higher as sample size grows. Although it works well and quick in our problem, the computation speed tends to decrease very fast as dataset grows due to the computation and sorting of distances between the test point and every training points. And it does not learn anything from the training data and simply uses the training data itself for classification! The other drawbacks of KNN lies in that it's hard to determine the value of **k**. In our case, the value of **k** is easy to spot but for other settings, there's no rule of thumb. And the computation speed tends to decrease very fast as dataset grows due to the computation of distances between the test point and every training points. In addition, KNN will fail if the sample is not balanced.
+
+```{r code_model2_development, eval = FALSE}
+# create an empty dataframe to contain predictions
+pred.frm.knn <- NULL
+
+# create a function for knn model
+model.knn <- function(data.name,size){
+  toc <- Sys.time()
+  train.data <- get(data.name)
+  pred <- knn(train = train.data[, -1], test = testing[, -1], cl = train.data$label, k = 10)
+  tic <- Sys.time()
+  the.time <- as.numeric(x = tic-toc, units = "secs")
+  the.time <- min(the.time/60 , 1)
+  inaccuracy <- mean(pred != testing$label)
+  
+  output <- data.frame(Model = "K-Nearest Neighbors",
+                       Sample.Size = size,
+                       data.name = data.name,
+                       the.time = the.time,
+                       inaccuracy = inaccuracy)
+  pred.frm.knn <<- cbind(as.character(pred),pred.frm.knn)
+    
+  return(output)
+}
+
+# Running the function for 3 different sample sizes and 3 iterations for each size
+knn.tab = iteration(model.function = model.knn)
+colnames(pred.frm.knn) <- sample_datasets
+
+# Formatting the tables with initial results
+knn <- scoring('knn')
+knn.table <- reporting(knn)
+
+# Formatting the tables with average results
+knn.summary <- scoring.summary(knn)
+knn.summary.table <- reporting(knn.summary)
+
+# save the results of the model
+saveRDS(knn,"knn")
+saveRDS(knn.summary,"knn.summary")
+saveRDS(knn.table,"knn.table")
+saveRDS(knn.summary.table,"knn.summary.table")
+```
+
+```{r load_model2}
+# load the results of the model
+loadRDS("knn.table")
+loadRDS("knn.summary.table")
+```
+
+### Model 3:  Classification Tree
+
+A classification tree is a tree that predicts the value of target variable based on input features, so it is very easy to interpret visually and it works well with decision boundaries parallel to the feature axis, since it mirrors human decision making more closely. But seen from the result, the accuracy(C) is not good. However, since this model doesn't cost much time, the overall score is not that bad.
+
+```{r code_model3_development, eval = FALSE}
+# create an empty dataframe to contain predictions
+pred.frm.classification.tree <- NULL
+
+# create a function for Classification Tree
+model.classification.tree <- function (data.name,size){
+  
+  toc <- Sys.time()
+# modeling steps
+  trControl = trainControl(method="cv",number=10) #10-fold cross validation
+  tuneGrid = expand.grid(.cp=seq(0,0.1,0.001))
+  set.seed(100)
+  trainCV = train(as.factor(label)~.,data=get(data.name),
+                method="rpart", trControl=trControl,tuneGrid=tuneGrid)
+# prediction steps
+  treeCV = rpart(as.factor(label)~.,data=testing,
+               method="class",
+               control=rpart.control(cp=trainCV$bestTune))
+  pred = predict(treeCV,newdata=testing,type="class")
+  tic <- Sys.time()
+  the.time <- as.numeric(x = tic-toc, units = "secs")
+  the.time <- min(the.time/60 , 1)
+  inaccuracy <- mean(pred != testing$label)
+  
+  output <- data.frame(Model = "Classification Tree",
+                       Sample.Size = size,
+                       data.name = data.name,
+                       the.time = the.time,
+                       inaccuracy = inaccuracy)
+  pred.frm.classification.tree <<- cbind(as.character(pred),pred.frm.classification.tree)
+
+  return(output)
+}
+
+# Running the function for 3 different sample sizes and 3 iterations for each size
+classification.tree.tab = iteration(model.function = model.classification.tree)
+colnames(pred.frm.classification.tree) <- sample_datasets
+
+# Formatting the tables with initial results
+classification.tree <- scoring('classification.tree')
+classification.tree.table <- reporting(classification.tree)
+
+# Formatting the tables with average results
+classification.tree.summary <- scoring.summary(classification.tree)
+classification.tree.summary.table <- reporting(classification.tree.summary)
+
+# save the results of the model
+saveRDS(classification.tree,"classification.tree")
+saveRDS(classification.tree.summary,"classification.tree.summary")
+saveRDS(classification.tree.table,"classification.tree.table")
+saveRDS(classification.tree.summary.table,"classification.tree.summary.table")
+```
+
+```{r load_model3}
+# load the results of the model
+loadRDS("classification.tree.table")
+loadRDS("classification.tree.summary.table")
+```
+
+### Model 4: Support Vector Machines
+
+Support Vector Machine is a supervised, non-linear, non-parametric classification technique. It constructs a hyperplane in an N-dimensional space which maximizes the distance to the nearest data points of any classes. Maximizing the margin distance provides some reinforcement so that future data points can be classified with more confidence. SVM does well on both structured and unstructured data. By generalizing data, SVM seems to have lower risk suffering from overfitting. Also, it delivers a unique solution, since the optimality problem is convex. The effectiveness of SVM is supported by our results. It does good job in terms of *Points* which are generally lower than other methods. Although it's an elegant and powerful algorithm, the results are difficult to understand and interpret. And the long training time for large datasets can not be ignored either.
+
+```{r code_model4_development, eval = FALSE}
+# create an empty dataframe to contain predictions
+pred.frm.svm <- NULL
+
+# svm model
+model.svm <- function(data.name,size){
+  toc <- Sys.time()
+  train.data <- get(data.name)
+  # fit svm model
+  mod <- svm(formula = as.formula(formula.fashion), data = train.data, type = "C")
+  # prediction
+  pred <- predict(object = mod, newdata = testing)
+  tic <- Sys.time()
+  the.time <- as.numeric(x = tic-toc, units = "secs")
+  the.time <- min(the.time/60 , 1)
+  inaccuracy <- mean(pred != testing$label)
+  
+  output <- data.frame(Model = "Support Vector Machines",
+                       Sample.Size = size,
+                       data.name = data.name,
+                       the.time = the.time,
+                       inaccuracy = inaccuracy)
+  pred.frm.svm <<- cbind(as.character(pred),pred.frm.svm)
+
+  return(output)
+}
+
+# Running the function for 3 different sample sizes and 3 iterations for each size
+svm.tab = iteration(model.function = model.svm)
+colnames(pred.frm.svm) <- sample_datasets
+
+# Formatting the tables with initial results
+svm <- scoring('svm')
+svm.table <- reporting(svm)
+
+# Formatting the tables with average results
+svm.summary <- scoring.summary(svm)
+svm.summary.table <- reporting(svm.summary)
+
+# save the results of the model
+saveRDS(svm,"svm")
+saveRDS(svm.summary,"svm.summary")
+saveRDS(svm.table,"svm.table")
+saveRDS(svm.summary.table,"svm.summary.table")
+```
+
+```{r load_model4}
+# load the results of the model
+loadRDS("svm.table")
+loadRDS("svm.summary.table")
+```
+
+### Model 5: Lasso Regression
+
+Lasso Regression is a penalized regression. It can perform feature selection to choose less variables for fitting a better model  with multinomial response type. Parameter lambda for Lasso will lead to shrinkage in the estimates of the beat coefficient into zero. Zeroing out the rest variables, it can minimize the prediction error. First, I performed a Lasso Regression with 5-fold cross validation to choose the best value of lambda for Lasso Regression, and then I constructed another Lasso Regression without performing cross validation. Compared with the model without cross validation process, the model with cross validation offered us a higher prediction accuracy, but a long time consuming. Therefore, after applying the weighted equation, the points in the model without doing cross validation has higher points in C. Hence, we keep this model as one of the ten models. Thus, we can come up with the question of changing the weight on time and weight on test error in order to get a more accurate prediction model. However, compare with other models, the overall disadvantage of Lasso Regression is long running time with low accuracy.
+
+```{r code_model5_development, eval = FALSE}
+# create an empty dataframe to contain predictions
+pred.frm.lassowcv <- NULL
+
+##Lasso with cross validation
+model.lassowcv <- function(data.name,size){
+  toc <- Sys.time()
+  train.data <- get(data.name)
+  #Does k-fold cross-validation for glmnet, produce best lambda
+  cv <- cv.glmnet(as.matrix(train.data[,-1]),as.matrix(train.data[,1]), alpha=1,nfolds=5, family= "multinomial")
+  bestlambda <- cv$lambda.min
+  
+  ##fitting Lasso Regression
+  lasso.rg <- glmnet(as.matrix(train.data[,-1]),as.matrix(train.data[,1]), alpha = 1, lambda = bestlambda, family = "multinomial", type.multinomial = "grouped")  ##group
+  ##predict classification
+  pred <- predict(lasso.rg, newx = as.matrix(testing[,-1]), type = "class")  
+  tic <- Sys.time()
+  the.time <- as.numeric(x = tic-toc, units = "secs")
+  the.time <- min(the.time/60 , 1)
+  inaccuracy <- mean(pred != testing$label)
+  
+  output <- data.frame(Model = "Lasso with cross validation",
+                       Sample.Size = size,
+                       data.name = data.name,
+                       the.time = the.time,
+                       inaccuracy = inaccuracy)
+  pred.frm.lassowcv <<- cbind(as.character(pred),pred.frm.lassowcv)
+
+  return(output)
+}
+
+# Running the function for 3 different sample sizes and 3 iterations for each size
+lassowcv.tab = iteration(model.function = model.lassowcv)
+colnames(pred.frm.lassowcv) <- sample_datasets
+
+# Formatting the tables with initial results
+lassowcv <- scoring('lassowcv')
+lassowcv.table <- reporting(lassowcv)
+
+# Formatting the tables with average results
+lassowcv.summary <- scoring.summary(lassowcv)
+lassowcv.summary.table <- reporting(lassowcv.summary)
+
+# save the results of the model
+saveRDS(lassowcv,"lassowcv")
+saveRDS(lassowcv.summary,"lassowcv.summary")
+saveRDS(lassowcv.table,"lassowcv.table")
+saveRDS(lassowcv.summary.table,"lassowcv.summary.table")
+
+# create an empty dataframe to contain predictions
+pred.frm.lasso <- NULL
+
+##Lasso without cross validation
+model.lasso <- function(data.name,size){
+  toc <- Sys.time()
+  train.data <- get(data.name)
+  ##fitting Lasso Regression
+  lasso.rg2 <- glmnet(as.matrix(train.data[,-1]),as.matrix(train.data[,1]), alpha = 1, family = "multinomial")  ##group
+  ##predict classification
+  pred <- predict(lasso.rg2, newx = as.matrix(testing[,-1]), type = "class") 
+  tic <- Sys.time()
+  the.time <- as.numeric(x = tic-toc, units = "secs")
+  the.time <- min(the.time/60 , 1)
+  inaccuracy <- mean(pred != testing$label)
+  
+  output <- data.frame(Model = "Lasso without cross validation",
+                       Sample.Size = size,
+                       data.name = data.name,
+                       the.time = the.time,
+                       inaccuracy = inaccuracy)
+  pred.frm.lasso <<- cbind(as.character(pred),pred.frm.lasso)
+
+  return(output)
+}
+
+# Running the function for 3 different sample sizes and 3 iterations for each size
+lasso.tab = iteration(model.function = model.lasso)
+colnames(pred.frm.lasso) <- sample_datasets
+
+# Formatting the tables with initial results
+lasso <- scoring('lasso')
+lasso.table <- reporting(lasso)
+
+# Formatting the tables with average results
+lasso.summary <- scoring.summary(lasso)
+lasso.summary.table <- reporting(lasso.summary)
+
+# save the results of the model
+saveRDS(lasso,"lasso")
+saveRDS(lasso.summary,"lasso.summary")
+saveRDS(lasso.table,"lasso.table")
+saveRDS(lasso.summary.table,"lasso.summary.table")
+```
+
+```{r load_model5}
+# load the results of the model
+loadRDS("lassowcv.table")
+loadRDS("lassowcv.summary.table")
+loadRDS("lasso.table")
+loadRDS("lasso.summary.table")
+```
+
+
+### Model 6: Multinomial logistic regression 
+
+Our dataset has more than 2 categories outcomes, multinomial logistic regression can generate logistic regression on predicting with more than two classification outcomes. Multinomial logistic regression modeling is  a supervised learning, which depends on linear combination of our 49 independent variables, and the process is based on using maximum likelihood to estimate the probability of each classification category. It does not require the dependent variables to be normal distributed. The decision boundary can be linear and non linear as well. From the scoreboard, we saw the test error is pretty high as the size becoming smaller, while the overall time is very short, hence, based on weight the point C is pretty small. Therefore, the multinomial logistic regression requires large sample size to obtain a better accuracy, but the time will consume more.
+
+```{r code_model6_development, eval = FALSE}
+# create an empty dataframe to contain predictions
+pred.frm.multinomial.LR <- NULL
+
+# create a function for multinomial logistic regression
+model.multinomial.LR <- function(data.name,size){
+  toc <- Sys.time()
+  train.data <- get(data.name)
+  the.formula. <- create.formula(outcome.name = fashion.name, input.names = input.names)
+  
+  ##fitting multinomial logistic regression model
+  multilr <- multinom(as.formula(the.formula.),train.data)
+  ##predict classification
+  pred <- predict(multilr, testing[,-1])
+  tic <- Sys.time()
+  the.time <- as.numeric(x = tic-toc, units = "secs")
+  the.time <- min(the.time/60 , 1)
+  inaccuracy <- mean(pred != testing$label)
+  
+  output <- data.frame(Model = "Multinomial logistic regression",
+                       Sample.Size = size,
+                       data.name = data.name,
+                       the.time = the.time,
+                       inaccuracy = inaccuracy)
+  pred.frm.multinomial.LR <<- cbind(as.character(pred),pred.frm.multinomial.LR)
+
+  return(output)
+}
+
+# Running the function for 3 different sample sizes and 3 iterations for each size
+LR.tab = iteration(model.function = model.multinomial.LR)
+colnames(pred.frm.multinomial.LR) <- sample_datasets
+
+# Formatting the tables with initial results
+LR <- scoring('LR')
+LR.table <- reporting(LR)
+
+# Formatting the tables with average results
+LR.summary <- scoring.summary(LR)
+LR.summary.table <- reporting(LR.summary)
+
+# save the results of the model
+saveRDS(LR,"LR")
+saveRDS(LR.summary,"LR.summary")
+saveRDS(LR.table,"LR.table")
+saveRDS(LR.summary.table,"LR.summary.table")
+```
+
+```{r load_model6}
+# load the results of the model
+loadRDS("LR.table")
+loadRDS("LR.summary.table")
+```
+
+### Model 7: Random Forest 
+
+Random Forest is a supervised learning, and it can well perform classification problem. Based on decision trees, Random Forest overcomes the Bagging's limitation, and here it built default 500 trees from bootstrap samples with searching for best features among 7(mytry) random sample variables as the candidates at each split. Therefore, the 500 trees will be far less correlated. Setting the parameter "importance" equal to TRUE, it evaluated the importance of each feature on prediction result, and we may do feature selection based on the importance criteria. Moreover, setting the parameter "proximity" equal to TRUE will give us proximity measure among the rows. From the scoreboard, its test error is relatively low and it become lower as the sample data size become bigger. With default parameters, Random Forest can give us a good prediction outcome. With enough trees in the forest, overfitting will not easily affect to our model prediction, however more trees will cost us more processing time.
+
+```{r code_model7_development, eval = FALSE}
+# create an empty dataframe to contain predictions
+pred.frm.RF <- NULL
+
+# create a function for Random Forest
+model.RF <- function(data.name,size){
+  toc <- Sys.time()
+  train.data <- get(data.name)
+  train.data[,label := as.factor(label)]
+  ##fitting multinomial logistic regression model
+  rf<-randomForest(as.formula(formula.fashion), train.data, mtry=sqrt(49), importance = T, proximity = T)
+  ##predict classification
+  pred<-predict(rf, testing[,-1])
+  tic <- Sys.time()
+  the.time <- as.numeric(x = tic-toc, units = "secs")
+  the.time <- min(the.time/60 , 1)
+  inaccuracy <- mean(pred != testing$label)
+  
+  output <- data.frame(Model = "Random Forest",
+                       Sample.Size = size,
+                       data.name = data.name,
+                       the.time = the.time,
+                       inaccuracy = inaccuracy)
+  pred.frm.RF <<- cbind(as.character(pred),pred.frm.RF)
+
+  return(output)
+}
+
+# Running the function for 3 different sample sizes and 3 iterations for each size
+RF.tab = iteration(model.function = model.RF)
+colnames(pred.frm.RF) <- sample_datasets
+
+# Formatting the tables with initial results
+RF <- scoring('RF')
+RF.table <- reporting(RF)
+
+# Formatting the tables with average results
+RF.summary <- scoring.summary(RF)
+RF.summary.table <- reporting(RF.summary)
+
+# save the results of the model
+saveRDS(RF,"RF")
+saveRDS(RF.summary,"RF.summary")
+saveRDS(RF.table,"RF.table")
+saveRDS(RF.summary.table,"RF.summary.table")
+```
+
+```{r load_model7}
+# load the results of the model
+loadRDS("RF.table")
+loadRDS("RF.summary.table")
+```
+
+### Model 8: Generalized Boosted Regression Models - gbm
+
+Gradient Boosted Methods generally have 3 parameters to train: shrinkage parameter, depth of tree, number of trees. Each of these parameters should be tuned to get a good fit. GBMs build an ensemble of weak and shallow successive trees with each tree learning and improving from the previous one, by using the same or slightly different in parameter setting's base learners to adaptively fit the data. The greatest advantage of GBMs is that it doesn't require any data pre-processing and can provide predictive accuracy that cannot be beat by other models with lots of flexibility. However, in this case, since we take running time into account, we didn't tune many parameters in the model and the accuracy is as good as expected. This reveals the disadvantage of GBMs is that GBMs often require many trees which can be highly time and memory exhaustive, since trees are built iteratively.
+
+```{r code_model8_development, eval = FALSE}
+# create an empty dataframe to contain predictions
+pred.frm.gbm <- NULL
+
+#create function for gbm
+model.gbm <- function (data.name,size){
+  set.seed(1)
+  
+  toc <- Sys.time()
+  # modeling steps
+  # Fit the model on the training set
+  set.seed(123)
+  trControl=trainControl(method = "cv",
+                         number = 5)
+  tuneGrid=  expand.grid(n.trees = 300,
+                         interaction.depth = 2,
+                         shrinkage = 0.15,
+                         n.minobsinnode=10)
+  cvBoost = train(as.factor(label)~.,
+                  data=get(data.name),
+                  method="gbm",
+                  trControl=trControl,
+                  tuneGrid=tuneGrid)
+  # Make predictions on the test data
+  pred <- predict(cvBoost, newdata = testing, n.trees = 300,type="raw")
+  tic <- Sys.time()
+  the.time <- as.numeric(x = tic-toc, units = "secs")
+  the.time <- min(the.time/60 , 1)
+  inaccuracy <- mean(pred != testing$label)
+  
+  output <- data.frame(Model = "gbm",
+                       Sample.Size = size,
+                       data.name = data.name,
+                       the.time = the.time,
+                       inaccuracy = inaccuracy)
+  pred.frm.gbm <<- cbind(as.character(pred),pred.frm.gbm)
+
+  return(output)
+}
+
+# Running the function for 3 different sample sizes and 3 iterations for each size
+gbm.tab = iteration(model.function = model.gbm)
+colnames(pred.frm.gbm) <- sample_datasets
+
+# Formatting the tables with initial results
+gbm <- scoring('gbm')
+gbm.table <- reporting(gbm)
+
+# Formatting the tables with average results
+gbm.summary <- scoring.summary(gbm)
+gbm.summary.table <- reporting(gbm.summary)
+
+# save the results of the model
+saveRDS(gbm,"gbm")
+saveRDS(gbm.summary,"gbm.summary")
+saveRDS(gbm.table,"gbm.table")
+saveRDS(gbm.summary.table,"gbm.summary.table")
+```
+
+```{r load_model8}
+# load the results of the model
+loadRDS("gbm.table")
+loadRDS("gbm.summary.table")
+```
+
+### Model 9: Generalized Boosted Regression Models - xgboost
+
+XGBoost Algorithm is a scalable and accurate implementation of gradient boosted decision trees, which was designed for speed and performance. As has been mentioned above, boosting is an ensemble method that seeks to create a stronger classifier (model) based on previous "weak" classifiers, which means this algorithm is trying to build a stronger correlation between the learners and the actual target variable. By adding models on top of each other iteratively, the errors of the previous model will be corrected by the next predictor, until the training data is accurately predicted or reproduced by the model. 
+
+In this case, the overall result is not that good, even compared to other simpler models, because of time consuming(B) and inaccuracy rate(C).
+
+```{r code_model9_development, eval = FALSE}
+# create an empty dataframe to contain predictions
+pred.frm.xgboost <- NULL
+#create function for xgboost
+model.xgboost <- function (data.name,size){
+  set.seed(1)
+  
+  toc <- Sys.time()
+  # modeling steps
+  # Fit the model on the training set
+  xgbTree <- train(as.factor(label)~., 
+               data = get(data.name), 
+               method = "xgbTree",
+               trControl = trainControl("cv", number = 5)
+               )
+  # Make predictions on the test data
+  pred <- predict(xgbTree, testing, type="raw")
+  tic <- Sys.time()
+  the.time <- as.numeric(x = tic-toc, units = "secs")
+  the.time <- min(the.time/60 , 1)
+  inaccuracy <- mean(pred != testing$label)
+  
+  output <- data.frame(Model = "xgboost",
+                       Sample.Size = size,
+                       data.name = data.name,
+                       the.time = the.time,
+                       inaccuracy = inaccuracy)
+  pred.frm.xgboost <<- cbind(as.character(pred),pred.frm.xgboost)
+
+  return(output)
+}
+
+# Running the function for 3 different sample sizes and 3 iterations for each size
+xgboost.tab = iteration(model.function = model.xgboost)
+colnames(pred.frm.xgboost) <- sample_datasets
+
+# Formatting the tables with initial results
+xgboost <- scoring('xgboost')
+xgboost.table <- reporting(xgboost)
+
+# Formatting the tables with average results
+xgboost.summary <- scoring.summary(xgboost)
+xgboost.summary.table <- reporting(xgboost.summary)
+
+# save the results of the model
+saveRDS(xgboost,"xgboost")
+saveRDS(xgboost.summary,"xgboost.summary")
+saveRDS(xgboost.table,"xgboost.table")
+saveRDS(xgboost.summary.table,"xgboost.summary.table")
+```
+
+```{r load_model9}
+# load the results of the model
+loadRDS("xgboost.table")
+loadRDS("xgboost.summary.table")
+```
+
+### Model 10: Ensemble model 
+
+Based on the previous results, we picked up the predictions from four different models, all of which have good performance. The accuracy about prediction didn't get improved from the initial prediction of all these four model but the running time has been shorten by a larger degree so the overall score is improved.
+
+```{r code_model10_development, eval = FALSE}
+# create a function for ensemble model
+model.ensemble <- function(data.name,size){
+  
+  pred.mat <- cbind(pred.frm.multinomial.LR[,data.name],pred.frm.knn[,data.name],pred.frm.ridge.regression[,data.name],pred.frm.classification.tree[,data.name])
+  # Setting starting time
+  toc <- Sys.time()
+  
+  # Make predictions on the test data
+  pred <- apply(pred.mat,1,vote)
+  # Ending time
+  tic <- Sys.time()
+  the.time <- as.numeric(x = tic-toc, units = "secs")
+  the.time <- min(the.time/60 , 1)
+  inaccuracy <- mean(pred != testing$label)
+  
+  # Model summary
+  output <- data.frame(Model = "Ensemble model",
+                       Sample.Size = size,
+                       data.name = data.name,
+                       the.time = the.time,
+                       inaccuracy = inaccuracy)
+  return(output)                   
+}
+
+# Running the function for 3 different sample sizes and 3 iterations for each size
+ensemble.tab = iteration(model.function = model.ensemble)
+
+
+# Formatting the tables with initial results
+ensemble <- scoring('ensemble')
+ensemble.table <- reporting(ensemble)
+
+# Formatting the tables with average results
+ensemble.summary <- scoring.summary(ensemble)
+ensemble.summary.table <- reporting(ensemble.summary)
+
+# save the results of the model
+saveRDS(ensemble,"ensemble")
+saveRDS(ensemble.summary,"ensemble.summary")
+saveRDS(ensemble.table,"ensemble.table")
+saveRDS(ensemble.summary.table,"ensemble.summary.table")
+```
+
+```{r load_model10}
+# load the results of the model
+loadRDS("ensemble.table")
+loadRDS("ensemble.summary.table")
+```
+
+## Scoreboard
+
+```{r scoreboard}
+scoreboard <- setorderv(as.data.table(rbind(loadRDS("ridge.regression"),loadRDS("knn"),loadRDS("classification.tree"),loadRDS("svm"),loadRDS("LR"),loadRDS("RF"),loadRDS("gbm"),loadRDS("xgboost"),loadRDS("lasso"),loadRDS("ensemble"))), "Points",1)
+reporting(scoreboard)
+
+scoreboard.average <- setorderv(as.data.table(rbind(loadRDS("ridge.regression.summary"),loadRDS("knn.summary"),loadRDS("classification.tree.summary"),loadRDS("svm.summary"),loadRDS("LR.summary"),loadRDS("RF.summary"),loadRDS("gbm.summary"),loadRDS("xgboost.summary"),loadRDS("lasso.summary"),loadRDS("ensemble.summary"))), "Points",1)
+reporting(scoreboard.average)
+```
+
+## Discussion
+
+Seen from the consolidated table, among all these models, **ensemble model** produces the best result considering its proportion of dataset used, running time and the inaccuracy rate altogether, especially for the smallest sample dataset. However, this doesn't mean that the ensemble model would always be the best model to choose, seen from the inaccuracy rate. The good result of ensemble model is mainly based on shorter running time, compared to that of the other models. Among all the other models, **Support Vector Machines** performs the best, no matter in which size of sample dataset. Also, **K-Nearest Neigbors** and **Random Forest** perform outstandingly but the main reason is about running time instead of high accuracy. However, **xgboost** and **gbm** rank lowest among all these models mainly because of the time-consuming issue as well as low accuracy.
+
+The point of this project is to understand different machine learning mechanisms and to find out the best model for prediction. Changing the weights of sample size component **A** the running time factor **B** or the accuracy **C** will definitely affect the model evaluation. If we give more weight on **A**, the value of **Points** will be dominated by the sample size. Therefore, different models with the same sample size may have similar scores. As for attaching more weight on **B**, then we are trying to stress more attention on the running time. The model with least running time will win. So it is possible that the models with sample size of 500 are potential winners, since in general the smaller the sample, the less the running time.  
+
+If given the computing resources to explore a wider variety of models and sample sizes, we would choose the sample size with different scales to get more distinct dataset. And maybe we can filter the models that are not appropriate for large dataset out before modeling large data.
