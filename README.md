@@ -23,7 +23,7 @@ Each file includes the following columns:
 
 What are the best machine learning models for classifying the labels of the testing set based upon the data of the training set? How small of a sample size do you need to generate the “best” predictions? How long does the computer need to run to obtain good results? To balance these competing goals, this project is using an overall scoring function for the quality of a classification.
 
-** Points = 0.25 * A + 0.25 * B + 0.5 * C **
+**Points = 0.25 * A + 0.25 * B + 0.5 * C**
 
 where
 
