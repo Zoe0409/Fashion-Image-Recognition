@@ -1,3 +1,5 @@
+![Hits](https://hitcounter.pythonanywhere.com/count/tag.svg?url=https%3A%2F%2Fgithub.com%2FZoe0409%2FFashion-Image-Recognition)
+
 # Fashion-Image-Recognition
 
 This project is focusing on an image recognition problem. It is a group project for the Applied Data Science course under Statistics Deparment of Columbia University. The group constructed a variety of machine learning models with the goal of generating predictive classifications.
